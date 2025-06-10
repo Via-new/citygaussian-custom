@@ -37,6 +37,9 @@ class SepDepthTrim2DGSRenderer(Renderer):
         self.diable_start_trimming = diable_start_trimming
         self.diable_trimming = diable_trimming
 
+    def _depth_ssim_loss(self, a, b):
+        pass
+
     def forward(
             self,
             viewpoint_camera: Camera,

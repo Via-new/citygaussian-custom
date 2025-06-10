@@ -3,7 +3,7 @@ import os
 import argparse
 import lightning
 import torch
-from internal.utils.gaussian_utils import Gaussian
+from internal.utils.gaussian_utils import GaussianPlyUtils
 from internal.utils.gaussian_model_loader import GaussianModelLoader
 from internal.utils.vq_utils import read_ply_data, write_ply_data, load_vqgaussian
 
@@ -36,20 +36,20 @@ if os.path.exists(os.path.join(args.input, 'extreme_saving')):
     checkpoint["state_dict"]["gaussian_model._scaling"] = dequantized_feats[:, -7:-4]
     checkpoint["state_dict"]["gaussian_model._rotation"] = dequantized_feats[:, -4:]
     checkpoint["state_dict"]["gaussian_model._features_extra"] = torch.empty(dequantized_feats.shape[0], 0).to('cuda')
-    checkpoint["gaussian_model_extra_state_dict"]["active_sh_degree"] = args.sh_degree
+    checkpoint['hyper_parameters']['gaussian'].sh_degree = args.sh_degree
     if args.output is None:
         args.output = os.path.join(args.input, 'checkpoints', args.reference.split("/")[-1])
     
 elif args.input.endswith(".ply"):
-    model = Gaussian.load_from_ply(args.input, sh_degrees=args.sh_degree).to_parameter_structure()
+    model = GaussianPlyUtils.load_from_ply(args.input, sh_degrees=args.sh_degree).to_parameter_structure()
     checkpoint["state_dict"]["gaussian_model._xyz"] = model.xyz
     checkpoint["state_dict"]["gaussian_model._opacity"] = model.opacities
     checkpoint["state_dict"]["gaussian_model._features_dc"] = model.features_dc
     checkpoint["state_dict"]["gaussian_model._features_rest"] = model.features_rest
     checkpoint["state_dict"]["gaussian_model._scaling"] = model.scales
     checkpoint["state_dict"]["gaussian_model._rotation"] = model.rotations
-    checkpoint["state_dict"]["gaussian_model._features_extra"] = model.real_features_extra
-    checkpoint["gaussian_model_extra_state_dict"]["active_sh_degree"] = args.sh_degree
+    checkpoint["state_dict"]["gaussian_model._features_extra"] = torch.empty(model.xyz.shape[0], 0).to('cuda')
+    checkpoint['hyper_parameters']['gaussian'].sh_degree = args.sh_degree
     if args.output is None:
         os.makedirs(os.path.join(args.input[:args.input.rfind("/")], 'checkpoints'), exist_ok=True)
         args.output = os.path.join(args.input[:args.input.rfind("/")], 'checkpoints', args.reference.split("/")[-1])
