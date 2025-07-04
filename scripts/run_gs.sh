@@ -8,11 +8,11 @@ get_available_gpu() {
 PROJECT=VGGT
 
 declare -a scenes=(
-    "data/MipNeRF360_vggt/garden"
-    "data/MipNeRF360_vggt/flowers"
+    "data/MipNeRF360/garden"
+    "data/MipNeRF360/flowers"
 )
 
-dir="data/MipNeRF360_vggt"
+dir="data/MipNeRF360"
 
 for data_path in $dir/*; do
 # for data_path in "${scenes[@]}"; do
@@ -39,15 +39,15 @@ for data_path in $dir/*; do
 done
 wait
 
-# for data_path in $dir/*; do
-for data_path in "${scenes[@]}"; do
+for data_path in $dir/*; do
+# for data_path in "${scenes[@]}"; do
     while true; do
         gpu_id=$(get_available_gpu)
         if [[ -n $gpu_id ]]; then
             echo "GPU $gpu_id is available. Start evaluating GS on '$data_path'"
             WANDB_MODE=offline CUDA_VISIBLE_DEVICES=$gpu_id python main.py test \
                             --config outputs/$(basename $dir)/$(basename $data_path)/config.yaml \
-                            --save_val \
+                            --save_val &
             # Allow some time for the process to initialize and potentially use GPU memory
             sleep 60
             break
