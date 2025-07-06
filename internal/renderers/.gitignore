@@ -30,3 +30,4 @@
 !stp_renderer.py
 !appearance_2dgs_renderer.py
 !taming_3dgs_renderer.py
+!gsplat_camera_opt.py

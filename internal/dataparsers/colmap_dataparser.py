@@ -66,6 +66,8 @@ class Colmap(DataParserConfig):
 
     force_pinhole: bool = False
 
+    same_camera: bool = False
+
     def instantiate(self, path: str, output_path: str, global_rank: int) -> DataParser:
         return ColmapDataParser(path, output_path, global_rank, self)
 
@@ -362,6 +364,12 @@ class ColmapDataParser(DataParser):
         appearance_id = torch.tensor(appearance_id_list, dtype=torch.int)
         normalized_appearance_id = torch.tensor(normalized_appearance_id_list, dtype=torch.float32)
         camera_type = torch.tensor(camera_type_list, dtype=torch.int8)
+
+        if self.params.same_camera:
+            fx = torch.mean(fx, dim=0, keepdim=True).repeat(len(image_name_list))
+            fy = torch.mean(fy, dim=0, keepdim=True).repeat(len(image_name_list))
+            cx = torch.mean(cx, dim=0, keepdim=True).repeat(len(image_name_list))
+            cy = torch.mean(cy, dim=0, keepdim=True).repeat(len(image_name_list))
 
         # recalculate intrinsics if down sample enabled
         if self.params.down_sample_factor != 1:
