@@ -9,5 +9,6 @@ from .matrix_city_dataparser import MatrixCity
 from .phototourism_dataparser import PhotoTourism
 from .segany_colmap_dataparser import SegAnyColmap
 from .feature_3dgs_dataparser import Feature3DGSColmap
+from .colmap_pose_opt_dataparser import ColmapPoseOpt
 from .colmap_block_dataparser import ColmapBlock
 from .estimated_depth_colmap_block_dataparser import EstimatedDepthBlockColmap
