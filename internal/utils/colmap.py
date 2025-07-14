@@ -31,6 +31,7 @@
 
 from dataclasses import dataclass
 import os
+import torch
 import collections
 import numpy as np
 import struct
@@ -489,6 +490,60 @@ def rotmat2qvec(R):
     if qvec[0] < 0:
         qvec *= -1
     return qvec
+
+
+def qvec2rotmat_torch(qvec: torch.Tensor) -> torch.Tensor:
+    """
+    Converts a quaternion (qvec: [w, x, y, z]) to a rotation matrix (3x3).
+    Accepts 1D tensor of shape (4,) or batched tensor of shape (B, 4).
+    """
+    if qvec.ndim == 1:
+        qvec = qvec.unsqueeze(0)  # shape: (1, 4)
+
+    w, x, y, z = qvec[:, 0], qvec[:, 1], qvec[:, 2], qvec[:, 3]
+
+    ww, xx, yy, zz = w**2, x**2, y**2, z**2
+    wx, wy, wz = w*x, w*y, w*z
+    xy, xz, yz = x*y, x*z, y*z
+
+    rot = torch.stack([
+        1 - 2*yy - 2*zz, 2*xy - 2*wz,     2*xz + 2*wy,
+        2*xy + 2*wz,     1 - 2*xx - 2*zz, 2*yz - 2*wx,
+        2*xz - 2*wy,     2*yz + 2*wx,     1 - 2*xx - 2*yy
+    ], dim=-1).reshape(-1, 3, 3)
+
+    return rot[0] if rot.shape[0] == 1 else rot
+
+def rotmat2qvec_torch(R: torch.Tensor) -> torch.Tensor:
+    """
+    Converts a rotation matrix to a quaternion [w, x, y, z].
+    Accepts (3, 3) or batched (B, 3, 3) tensor.
+    """
+    if R.ndim == 2:
+        R = R.unsqueeze(0)  # shape: (1, 3, 3)
+
+    Rxx, Ryx, Rzx = R[:, 0, 0], R[:, 0, 1], R[:, 0, 2]
+    Rxy, Ryy, Rzy = R[:, 1, 0], R[:, 1, 1], R[:, 1, 2]
+    Rxz, Ryz, Rzz = R[:, 2, 0], R[:, 2, 1], R[:, 2, 2]
+
+    K = torch.stack([
+        torch.stack([Rxx - Ryy - Rzz, Ryx + Rxy,      Rzx + Rxz,      Ryz - Rzy], dim=-1),
+        torch.stack([Ryx + Rxy,      Ryy - Rxx - Rzz, Rzy + Ryz,      Rzx - Rxz], dim=-1),
+        torch.stack([Rzx + Rxz,      Rzy + Ryz,      Rzz - Rxx - Ryy, Rxy - Ryx], dim=-1),
+        torch.stack([Ryz - Rzy,      Rzx - Rxz,      Rxy - Ryx,      Rxx + Ryy + Rzz], dim=-1)
+    ], dim=-2) / 3.0
+
+    eigvals, eigvecs = torch.linalg.eigh(K)
+    max_eig_idx = eigvals.argmax(dim=-1)
+    qvec = torch.stack([
+        eigvecs[..., 3, max_eig_idx],
+        eigvecs[..., 0, max_eig_idx],
+        eigvecs[..., 1, max_eig_idx],
+        eigvecs[..., 2, max_eig_idx]
+    ], dim=-1)
+
+    qvec = torch.where(qvec[..., 0:1] < 0, -qvec, qvec)
+    return qvec[0] if qvec.shape[0] == 1 else qvec
 
 
 def main():

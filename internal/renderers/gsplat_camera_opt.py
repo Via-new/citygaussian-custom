@@ -6,12 +6,9 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from . import RendererOutputInfo, RendererOutputTypes
-from .renderer import Renderer, RendererConfig
-from internal.utils.network_factory import NetworkFactory
 from ..cameras import Camera
+from ..utils.colmap import rotmat2qvec_torch, qvec2rotmat_torch
 from ..models.gaussian import GaussianModel
-from internal.encodings.positional_encoding import PositionalEncoding
 
 from .gsplat_v1_renderer import GSplatV1Renderer, GSplatV1RendererModule, spherical_harmonics, spherical_harmonics_decomposed
 from .gsplat_mip_splatting_renderer_v2 import MipSplattingRendererMixin
@@ -43,7 +40,7 @@ def rotation_6d_to_matrix(d6: torch.Tensor) -> torch.Tensor:
 class ModelConfig:
     
     n_cameras: int = -1
-    pose_opt_type: Literal["sfm", "mlp"] = "sfm"
+    pose_opt_type: Literal["sfm", "mlp", "7dmlp"] = "sfm"
     cam_scale: float = 1.0
     mlp_width: int = 64
     mlp_depth: int = 2
@@ -167,6 +164,78 @@ class CameraOptModuleMLP(torch.nn.Module):
             
         return torch.matmul(camtoworlds, transform)
 
+class CameraOptModule7dMLP(torch.nn.Module):
+    """Camera pose optimization module using MLP."""
+
+    def __init__(self, n: int, mlp_width: int = 64, mlp_depth: int = 4, cam_scale: float = 1.0):
+        super().__init__()
+        # Identity rotation in 6D representation
+        self.register_buffer("identity", torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0, 0.0]))
+        
+        # Initial embeddings for each camera
+        self.num_cams = n
+        
+        # MLP layers
+        activation = torch.nn.ReLU(inplace=True)
+        layers = []
+        layers.append(torch.nn.Linear(7, mlp_width))
+        layers.append(activation)
+        for _ in range(mlp_depth - 1):
+            layers.append(torch.nn.Linear(mlp_width, mlp_width))
+            layers.append(activation)
+        # Output layer produces 9D adjustments (3D position + 6D rotation)
+        layers.append(torch.nn.Linear(mlp_width, 7))
+        self.mlp = torch.nn.Sequential(*layers)
+
+        self.cam_scale = cam_scale
+        
+    def zero_init(self):
+        # torch.nn.init.zeros_(self.embeds.weight)
+        #torch.nn.init.normal_(self.embeds.weight)
+        # Also initialize the last layer of MLP with small weights
+        torch.nn.init.zeros_(self.mlp[-1].weight)
+        torch.nn.init.zeros_(self.mlp[-1].bias)
+
+    def random_init(self, std: float):
+        # torch.nn.init.normal_(self.embeds.weight, std=std)
+        # Initialize the last layer of MLP with small weights
+        torch.nn.init.normal_(self.mlp[-1].weight, std=std)
+        torch.nn.init.normal_(self.mlp[-1].bias, std=std)
+
+    def forward(self, camtoworlds: torch.Tensor, embed_ids: torch.Tensor) -> torch.Tensor:
+        """Adjust camera pose based on MLP outputs with SGLD noise.
+
+        Args:
+            camtoworlds: (..., 4, 4)
+            embed_ids: (...,)
+
+        Returns:
+            updated camtoworlds: (..., 4, 4)
+        """
+        assert camtoworlds.shape[:-2] == embed_ids.shape
+        if camtoworlds.ndim == 2:
+            camtoworlds = camtoworlds.unsqueeze(0)
+        batch_shape = camtoworlds.shape[:-2]
+        
+        # Get embeddings and process through MLP with noise
+        quaternions = rotmat2qvec_torch(camtoworlds[..., :3, :3])  # (..., 4)
+        translations = camtoworlds[..., :3, 3] / self.cam_scale  # (..., 3)
+        if translations.ndim == 1:
+            translations = translations  # shape: (1, 3, 3)
+        mlp_input = torch.cat((quaternions, translations), dim=-1)  # (..., 7)
+
+        pose_deltas = self.mlp(mlp_input)  # (..., 7)
+        
+        pose_corrected = mlp_input + pose_deltas  # (..., 7)
+        rot = qvec2rotmat_torch(pose_corrected[..., :4])
+        dx = pose_corrected[..., 4:]
+        
+        camtoworlds_corrected = torch.eye(4, device=camtoworlds.device).repeat((*batch_shape, 1, 1))
+        camtoworlds_corrected[..., :3, :3] = rot
+        camtoworlds_corrected[..., :3, 3] = dx * self.cam_scale
+            
+        return camtoworlds_corrected.squeeze()
+
 @dataclass
 class GSplatCameraOptRenderer(GSplatV1Renderer):
 
@@ -196,12 +265,19 @@ class GSplatCameraOptRendererModule(GSplatV1RendererModule):
                 self.config.model.n_cameras = len(dataparser_outputs.appearance_group_ids)
                 self.config.model.cam_scale = dataparser_outputs.camera_extent
                 
-            self._setup_model()
+            self._setup_model(lightning_module.device)
             print(self.model)
 
     def _setup_model(self, device=None):
         if self.config.model.pose_opt_type == "mlp":
             self.model = CameraOptModuleMLP(
+                n=self.config.model.n_cameras,
+                mlp_width=self.config.model.mlp_width,
+                mlp_depth=self.config.model.mlp_depth,
+                cam_scale=self.config.model.cam_scale
+            )
+        elif self.config.model.pose_opt_type == "7dmlp":
+            self.model = CameraOptModule7dMLP(
                 n=self.config.model.n_cameras,
                 mlp_width=self.config.model.mlp_width,
                 mlp_depth=self.config.model.mlp_depth,
@@ -216,9 +292,6 @@ class GSplatCameraOptRendererModule(GSplatV1RendererModule):
 
     def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True):
         self.config.model.n_cameras = state_dict["model.embeds.weight"].shape[0]
-        self.config.model.pose_opt_type = state_dict["model.pose_opt_type"]
-        self.config.model.mlp_width = state_dict["model.mlp_width"]
-        self.config.model.mlp_depth = state_dict["model.mlp_depth"]
         self._setup_model(device=state_dict["model.embeds.weight"].device)
         return super().load_state_dict(state_dict, strict)
 
@@ -237,12 +310,12 @@ class GSplatCameraOptRendererModule(GSplatV1RendererModule):
         return embedding_optimizer, embedding_scheduler
 
     def forward(self, viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1.0, render_types: list = None, **kwargs):
-        w2cs = viewpoint_camera.world_to_camera
+        w2cs = torch.transpose(viewpoint_camera.world_to_camera, -2, -1)
         c2ws = torch.linalg.inv(w2cs)
         c2ws_corrected = self.model(c2ws, viewpoint_camera.appearance_id)
         
         viewpoint_camera_corrected = copy.deepcopy(viewpoint_camera)
-        viewpoint_camera_corrected.world_to_camera = torch.linalg.inv(c2ws_corrected)
+        viewpoint_camera_corrected.world_to_camera = torch.transpose(torch.linalg.inv(c2ws_corrected), -2, -1)
 
         return super().forward(
             viewpoint_camera=viewpoint_camera_corrected,
