@@ -68,6 +68,8 @@ class Colmap(DataParserConfig):
 
     same_camera: bool = False
 
+    train_on_test: bool = False  # whether use test set as training set, used only when optimizing test set pose
+
     def instantiate(self, path: str, output_path: str, global_rank: int) -> DataParser:
         return ColmapDataParser(path, output_path, global_rank, self)
 
@@ -480,6 +482,9 @@ class ColmapDataParser(DataParser):
             xyz = basic_pcd.points
             rgb = basic_pcd.colors
             print("load {} points from {}".format(xyz.shape[0], self.params.ply_file))
+        
+        if self.params.train_on_test:
+            image_set = [image_set[1], image_set[0]]
 
         # print information
         print("[colmap dataparser] train set images: {}, val set images: {}, loaded mask: {}".format(

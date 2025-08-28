@@ -128,7 +128,7 @@ class GaussianSplatting(LightningModule):
     def _random_background_color(self):
         return torch.rand(3)
 
-    def _initialize_gaussians_from_trained_model(self):
+    def _initialize_from_trained_model(self):
         # assert self.hparams["gaussian"].extra_feature_dims == 0
 
         from internal.utils.gaussian_model_loader import GaussianModelLoader
@@ -145,7 +145,7 @@ class GaussianSplatting(LightningModule):
             )
         else:
             # load from ckpt
-            gaussian_model, _, _ = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(
+            gaussian_model, renderer, _ = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(
                 load_from,
                 device=self.device,
                 eval_mode=False,
@@ -160,20 +160,25 @@ class GaussianSplatting(LightningModule):
             org_config = self.gaussian_model.config
             self.gaussian_model = gaussian_model
             self.gaussian_model.config = org_config
+        
+        # call for renderer
+        self.renderer = renderer
 
         print(f"initialize from {load_from}: sh_degree={self.gaussian_model.max_sh_degree}, overwrite_config={self.hparams['overwrite_config']}")
 
     def setup(self, stage: str):
+
+        self.renderer.setup(stage=stage, lightning_module=self)
+
         if stage == "fit":
             if self.hparams["initialize_from"] is None:
                 self.gaussian_model.setup_from_pcd(xyz=self.trainer.datamodule.point_cloud.xyz, rgb=self.trainer.datamodule.point_cloud.rgb / 255.)
             else:
-                self._initialize_gaussians_from_trained_model()
+                self._initialize_from_trained_model()
         else:
             if self.hparams["save_val_metrics"] is None:
                 self.hparams["save_val_metrics"] = True
-
-        self.renderer.setup(stage=stage, lightning_module=self)
+        
         self.metric.setup(stage=stage, pl_module=self)
         self.density_controller.setup(stage=stage, pl_module=self)
 

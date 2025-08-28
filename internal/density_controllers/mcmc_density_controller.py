@@ -60,10 +60,9 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
         self.register_buffer("binoms", binoms, persistent=False)
 
         # initialize opacities and scales
-        if stage == "fit":
+        if stage == "fit" and pl_module.hparams["initialize_from"] is None:
             self._opacities_and_scales_initialization(pl_module.gaussian_model)
-
-        pl_module.on_train_batch_end_hooks.append(self._add_xyz_noise)
+            pl_module.on_train_batch_end_hooks.append(self._add_xyz_noise)
 
     @staticmethod
     def _opacities_and_scales_initialization(gaussian_model) -> None:
