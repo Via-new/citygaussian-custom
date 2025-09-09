@@ -7,9 +7,9 @@ get_available_gpu() {
 
 PROJECT=VGGT
 
-dir="data/MipNeRF360_myds"
+dir="data/MipNeRF360_vggt_opt_gt_align"
 ref_dir="$dir"
-post_fix="_mcmc_x_myds"
+post_fix="_vggt_mcmc_x"
 config_path="configs/colmap_exp_ds4_mcmc.yaml"
 
 declare -a scenes=(
