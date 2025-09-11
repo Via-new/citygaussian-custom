@@ -17,6 +17,7 @@ if __name__ == "__main__":
     parser = ArgumentParser(description="Training script parameters")
     parser.add_argument('--result_path', type=str, help='path of ckpt file', default=None)
     parser.add_argument('--ref_folder', type=str, help='path of reference folder', default=None)
+    parser.add_argument('--disable_correction', action='store_true', help='disable pose correction')
     parser.add_argument('--device', type=str, help='device to use', default='cuda:0')
     args = parser.parse_args(sys.argv[1:])
 
@@ -65,9 +66,16 @@ if __name__ == "__main__":
     w2cs_pred = torch.concatenate([w2cs_train_pred, w2cs_val_pred], dim=0)
     appearance_ids_pred = torch.concatenate([dataparser_outputs.train_set.cameras.appearance_id, 
                                             dataparser_outputs.val_set.cameras.appearance_id], dim=0).to(args.device)
-    c2ws_pred = torch.linalg.inv(w2cs_pred)
-    c2ws_pred_corrected = renderer.model(c2ws_pred, appearance_ids_pred)
-    w2cs_pred_corrected = torch.linalg.inv(c2ws_pred_corrected)
+    
+    if args.disable_correction:
+        print("[INFO] Pose correction disabled.")
+        w2cs_pred_corrected = w2cs_pred
+        prefix="uncorrected_"
+    else:
+        c2ws_pred = torch.linalg.inv(w2cs_pred)
+        c2ws_pred_corrected = renderer.model(c2ws_pred, appearance_ids_pred)
+        w2cs_pred_corrected = torch.linalg.inv(c2ws_pred_corrected)
+        prefix="corrected_"
 
     pred_se3 = torch.eye(4, device=args.device).unsqueeze(0).repeat(len(w2cs_pred_corrected), 1, 1)
     pred_se3[:, :3, :3] = torch.tensor(w2cs_pred_corrected[:, :3, :3], device=args.device)
@@ -83,11 +91,15 @@ if __name__ == "__main__":
 
     auc_results = evaluate_auc(pred_se3, gt_se3, device=args.device)
 
-    result_file = os.path.join(args.result_path, "pose_results.txt")
+    result_file = os.path.join(args.result_path, f"{prefix}pose_results.txt")
     with open(result_file, "w") as f:
         f.write(f"Image Count: {len(w2cs_ref)},\n")
         f.write(f"Relative Rotation Error (degrees): {auc_results['rel_rangle_deg']},\n")
         f.write(f"Relative Translation Error (degrees): {auc_results['rel_tangle_deg']},\n")
-        f.write(f"AUC at 30 degrees: {auc_results['Auc_30']}\n")
+        f.write(f"AUC at 30 degrees: {auc_results['Auc_30']},\n")
+        f.write(f"Racc_5: {auc_results['Racc_5']},\n")
+        f.write(f"Racc_15: {auc_results['Racc_15']},\n")
+        f.write(f"Tacc_5: {auc_results['Tacc_5']},\n")
+        f.write(f"Tacc_15: {auc_results['Tacc_15']},\n")
     
     print("[INFO] Pose evaluation results saved to {}".format(result_file))

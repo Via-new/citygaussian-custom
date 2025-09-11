@@ -142,12 +142,16 @@ def evaluate_auc(pred_se3, gt_se3, device, return_aligned=False):
     pred_se3_aligned[:, :3, :3] = torch.tensor(pred_aligned[:, :3, :3], device=device)
     pred_se3_aligned[:, 3, :3] = torch.tensor(pred_aligned[:, :3, 3], device=device)
 
-    rel_rangle_deg, rel_tangle_deg = camera_to_rel_deg(pred_se3_aligned, gt_se3, device, 4)
+    rel_rangle_deg, rel_tangle_deg = camera_to_rel_deg(pred_se3_aligned, gt_se3, device)
     print(f"    --  Pair Rot   Error (Deg) of Vanilla: {rel_rangle_deg.mean():10.2f}")
     print(f"    --  Pair Trans Error (Deg) of Vanilla: {rel_tangle_deg.mean():10.2f}")
 
     rError = rel_rangle_deg.cpu().numpy()
     tError = rel_tangle_deg.cpu().numpy()
+    Racc_5 = np.mean(rError < 5) * 100
+    Tacc_5 = np.mean(tError < 5) * 100
+    Racc_15 = np.mean(rError < 15) * 100
+    Tacc_15 = np.mean(tError < 15) * 100
 
     Auc_30 = calculate_auc_np(rError, tError, max_threshold=30)
     print(f"    --  AUC at 30: {Auc_30:.4f}")
@@ -155,6 +159,10 @@ def evaluate_auc(pred_se3, gt_se3, device, return_aligned=False):
     results = {
         'rel_rangle_deg': rel_rangle_deg.mean(),
         'rel_tangle_deg': rel_tangle_deg.mean(),
+        'Racc_5': Racc_5,
+        'Tacc_5': Tacc_5,
+        'Racc_15': Racc_15,
+        'Tacc_15': Tacc_15,
         'Auc_30': Auc_30,
     }
 
@@ -200,7 +208,7 @@ def umeyama(X, Y):
     t = mu_y - c * R @ mu_x
     return c, R, t
 
-def camera_to_rel_deg(pred_se3, gt_se3, device, batch_size):
+def camera_to_rel_deg(pred_se3, gt_se3, device, batch_size=1):
     """
     Calculate relative rotation and translation angles between predicted and ground truth cameras.
 
@@ -222,8 +230,15 @@ def camera_to_rel_deg(pred_se3, gt_se3, device, batch_size):
         # Compute relative camera poses between pairs
         # We use closed_form_inverse to avoid potential numerical loss by torch.inverse()
         # This is possible because of SE3
-        relative_pose_gt = closed_form_inverse(gt_se3[pair_idx_i1]).bmm(gt_se3[pair_idx_i2])
-        relative_pose_pred = closed_form_inverse(pred_se3[pair_idx_i1]).bmm(pred_se3[pair_idx_i2])
+        # Calculate in two direction to eliminate the bias of the order of camera pairs
+        relative_pose_gt_fw = closed_form_inverse(gt_se3[pair_idx_i1]).bmm(gt_se3[pair_idx_i2])
+        relative_pose_pred_fw = closed_form_inverse(pred_se3[pair_idx_i1]).bmm(pred_se3[pair_idx_i2])
+
+        relative_pose_gt_bw = closed_form_inverse(gt_se3[pair_idx_i2]).bmm(gt_se3[pair_idx_i1])
+        relative_pose_pred_bw = closed_form_inverse(pred_se3[pair_idx_i2]).bmm(pred_se3[pair_idx_i1])
+
+        relative_pose_gt = torch.cat((relative_pose_gt_fw, relative_pose_gt_bw), dim=0)
+        relative_pose_pred = torch.cat((relative_pose_pred_fw, relative_pose_pred_bw), dim=0)
 
         # Compute the difference in rotation and translation
         # between the ground truth and predicted relative camera poses

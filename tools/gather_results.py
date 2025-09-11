@@ -53,7 +53,8 @@ def gather_results(output_dir, format_float=False, result_filename='results.txt'
         df_final[numeric_cols] = df_final[numeric_cols].applymap(lambda x: float(f"{x:.4g}") if pd.notnull(x) else x)
 
     # Save to CSV in the output_dir
-    output_csv = os.path.join(output_dir, 'aggregated_results.csv')
+    file_name = result_filename.split('.')[0]
+    output_csv = os.path.join(output_dir, f'aggregated_{file_name}.csv')
     df_final.to_csv(output_csv, index=False)
     print(f"Saved aggregated results with summary to {output_csv}")
 
