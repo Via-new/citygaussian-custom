@@ -42,9 +42,8 @@ def rotation_6d_to_matrix(d6: torch.Tensor) -> torch.Tensor:
 class ModelConfig:
     
     n_cameras: int = -1
-    pose_opt_type: Literal["sfm", "mlp", "7dmlp"] = "sfm"
+    pose_opt_type: Literal["sfm", "mlp"] = "sfm"
     cam_scale: float = 1.0
-    scale: float = 1e-3  # Used for 7dmlp
     mlp_width: int = 64
     mlp_depth: int = 2
 
@@ -58,7 +57,6 @@ class OptimizationConfig:
     shceduler_type: Literal["step", "cosine", "none"] = "none"
     eps: float = 1e-15
     max_steps: int = 30_000
-    opt_test: bool = False  # TODO: remove it
 
 class CameraOptModule(nn.Module):
     """Camera pose optimization module."""
@@ -166,80 +164,7 @@ class CameraOptModuleMLP(torch.nn.Module):
         transform[..., :3, 3] = dx * self.cam_scale
             
         return torch.matmul(camtoworlds, transform)
-
-class CameraOptModule7dMLP(torch.nn.Module):
-    """Camera pose optimization module using MLP."""
-
-    def __init__(self, n: int, mlp_width: int = 256, mlp_depth: int = 2, scale: float = 1e-6):
-        super().__init__()
-        # Identity rotation in 6D representation
-        self.register_buffer("identity", torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0, 0.0]))
-        
-        # Initial embeddings for each camera
-        self.num_cams = n
-        
-        # MLP layers
-        activation = torch.nn.ELU(inplace=True)
-        layers = []
-        layers.append(torch.nn.Linear(7, mlp_width))
-        layers.append(activation)
-        for _ in range(mlp_depth - 1):
-            layers.append(torch.nn.Linear(mlp_width, mlp_width))
-            layers.append(activation)
-        # Output layer produces 9D adjustments (3D position + 6D rotation)
-        layers.append(torch.nn.Linear(mlp_width, 6))
-        self.mlp = torch.nn.Sequential(*layers)
-
-        self.scale = scale
-        
-    def zero_init(self):
-        # torch.nn.init.zeros_(self.embeds.weight)
-        #torch.nn.init.normal_(self.embeds.weight)
-        # Also initialize the last layer of MLP with small weights
-        # torch.nn.init.zeros_(self.mlp[-1].weight)
-        # torch.nn.init.zeros_(self.mlp[-1].bias)
-        pass
-
-    def random_init(self, std: float):
-        # torch.nn.init.normal_(self.embeds.weight, std=std)
-        # Initialize the last layer of MLP with small weights
-        torch.nn.init.normal_(self.mlp[-1].weight, std=std)
-        torch.nn.init.normal_(self.mlp[-1].bias, std=std)
-
-    def forward(self, camtoworlds: torch.Tensor, embed_ids: torch.Tensor) -> torch.Tensor:
-        """Adjust camera pose based on MLP outputs with SGLD noise.
-
-        Args:
-            camtoworlds: (..., 4, 4)
-            embed_ids: (...,)
-
-        Returns:
-            updated camtoworlds: (..., 4, 4)
-        """
-        assert camtoworlds.shape[:-2] == embed_ids.shape
-        if camtoworlds.ndim == 2:
-            camtoworlds = camtoworlds.unsqueeze(0)
-        if embed_ids.ndim == 0:
-            embed_ids = embed_ids.unsqueeze(0)
-        batch_shape = camtoworlds.shape[:-2]
-        
-        # Get embeddings and process through MLP with noise
-        r_init = rotation_matrix_to_axis_angle(camtoworlds[..., :3, :3])
-        t_init = camtoworlds[..., :3, 3]
-
-        mlp_input = torch.cat((embed_ids[..., None], r_init, t_init), dim=-1)  # (..., 7)
-
-        out = self.mlp(mlp_input) * self.scale
-        
-        r = out[..., :3] + r_init
-        t = out[..., 3:] + t_init
-        R = axis_angle_to_rotation_matrix(r)
-        
-        camtoworlds_corrected = torch.eye(4, device=camtoworlds.device).repeat((*batch_shape, 1, 1))
-        camtoworlds_corrected[..., :3, :3] = R
-        camtoworlds_corrected[..., :3, 3] = t
-            
-        return camtoworlds_corrected.squeeze()
+    
 
 @dataclass
 class GSplatCameraOptRenderer(GSplatV1Renderer):
@@ -280,13 +205,6 @@ class GSplatCameraOptRendererModule(GSplatV1RendererModule):
                 mlp_width=self.config.model.mlp_width,
                 mlp_depth=self.config.model.mlp_depth,
                 cam_scale=self.config.model.cam_scale
-            )
-        elif self.config.model.pose_opt_type == "7dmlp":
-            self.model = CameraOptModule7dMLP(
-                n=self.config.model.n_cameras,
-                mlp_width=self.config.model.mlp_width,
-                mlp_depth=self.config.model.mlp_depth,
-                scale=self.config.model.scale
             )
         else:
             self.model = CameraOptModule(self.config.model.n_cameras)
