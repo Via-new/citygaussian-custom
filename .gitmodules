@@ -10,3 +10,9 @@
 [submodule "submodules/diff-trim-surfel-rasterization"]
 	path = submodules/diff-trim-surfel-rasterization
 	url = https://github.com/YuxueYang1204/diff-surfel-rasterization
+[submodule "temp/diff-gaussian-rasterization"]
+	path = temp/diff-gaussian-rasterization
+	url = https://github.com/graphdeco-inria/diff-gaussian-rasterization
+[submodule "temp/simple-knn"]
+	path = temp/simple-knn
+	url = https://github.com/camenduru/simple-knn

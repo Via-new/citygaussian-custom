@@ -5,6 +5,13 @@ import os, shutil
 import numpy as np
 from argparse import ArgumentParser
 
+import sys
+
+# 获取当前脚本（render_sun.py）所在的目录（即blender目录）
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# 将该目录加入Python搜索路径
+sys.path.append(current_dir)
+
 from cam_pose_utils.cam_reader import readPklSceneInfo
 from render_utils.texture_allocator import TextureAllocator
 from render_utils.background_generator import draw_background
@@ -26,7 +33,18 @@ parser.add_argument('--write_cover', action='store_true')
 parser.add_argument("--fps", type=int, default=30)
 parser.add_argument("--clip_end", type=float, default=300)
 parser.add_argument('--fov_scale', type=float, default=1.0)
-args = parser.parse_args()
+#1109
+# 手动过滤参数：只保留 -- 之后的用户参数（核心修复）
+def get_script_args():
+    # 找到 -- 的位置，只取后面的参数作为脚本参数
+    if '--' in sys.argv:
+        return sys.argv[sys.argv.index('--') + 1:]
+    return []
+
+# 解析过滤后的参数（只包含你的 --load_path 等）
+args = parser.parse_args(get_script_args())
+#args = parser.parse_args(sys.argv[1:])
+#args = parser.parse_args()
 
 if args.save_dir == '':
     # unique_str = str(uuid.uuid4())

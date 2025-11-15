@@ -7,6 +7,13 @@ camera_paths
 renders
 videos
 edited
+blender
+temp
+# 额外排除日志和临时文件（可选，根据你的实际情况补充）
+jupyter.log
+train.log
+.ipynb_checkpoints/
+
 **/__pycache__
 submodules/simple-knn
 submodules/tiny-cuda-nn-fp32
@@ -22,4 +29,6 @@ clusters
 segments
 **/__pycache__
 upload.sh
+# 排除红框标注的目录
+
 
