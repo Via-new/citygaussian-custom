@@ -192,75 +192,232 @@ def generate_ellipse_path(poses: np.ndarray,
 
 def generate_translation_path(reference_pose: np.ndarray,
                               n_frames: int = 120,
-                              axis: Literal['x', 'y'] = 'x',
-                              distance: float = 10.0,
-                              bidirectional: bool = True) -> np.ndarray:
+                              axis: Literal['x', 'y','z'] = 'x',
+                              distance: float = 1.0,
+                              x_scale:float = 1.0,
+                              y_scale:float = 1.0,
+                              z_scale:float = 1.0,
+                              yaw: float = 0.0,    # Yaw调整（度），正值向右倾，负值向左倾
+                              pitch: float = 0.0,  # Pitch调整（度），正值抬头，负值低头
+                              roll: float = 0.0) -> np.ndarray:  # Roll调整（度），正值右旋，负值左旋
     """
-    基于单张参考相机位姿，沿x轴或y轴生成平移轨迹（保持朝向不变）
+    基于单张参考相机位姿，生成沿x/y轴平移的轨迹，并支持Yaw/Pitch/Roll角度调整
     
     参数：
-        reference_pose: 参考相机位姿（3x4矩阵，前3列是旋转矩阵，第4列是相机在世界坐标系的位置）
+        reference_pose: 参考相机位姿（3x4矩阵，前3列旋转，第4列位置）
         n_frames: 轨迹总帧数
-        axis: 平移方向（'x'或'y'）
-        distance: 平移总距离（单向或双向总长度）
-        bidirectional: 是否双向平移（从起点向正负方向移动，否则只向正方向移动）
+        distance: 平移总距离（单向）
+        yaw_adjust: Yaw角调整量（度），绕Y轴旋转
+        pitch_adjust: Pitch角调整量（度），绕X轴旋转
+        roll_adjust: Roll角调整量（度），绕Z轴旋转
     返回：
-        生成的平移轨迹位姿数组（形状：[n_frames, 3, 4]）
+        生成的轨迹位姿数组（[n_frames, 3, 4]）
     """
     # --------------------------
-    # 1. 提取参考相机的关键信息
+    # 1. 提取参考相机的原始旋转和位置
     # --------------------------
-    # 参考相机的旋转矩阵（保持朝向不变）
-    R = reference_pose[:3, :3].copy()  # 3x3旋转矩阵（决定相机朝向）
-    # 参考相机在世界坐标系的原始位置（x, y, z）
-    original_pos = reference_pose[:3, 3].copy()  # 3维向量
-    
-    # 确定平移轴对应的索引（x→0，y→1）
-    axis_idx = 0 if axis == 'x' else 1
+    R_original = reference_pose[:3, :3].copy()  # 原旋转矩阵（3x3）
+    original_pos = reference_pose[:3, 3].copy()  # 原位置（x, y, z）
     
     # --------------------------
-    # 2. 计算平移轨迹的位置序列
+    # 2. 构造三个旋转的矩阵（按Yaw→Pitch→Roll顺序叠加）
     # --------------------------
-    if bidirectional:
-        # 双向平移：从 -distance/2 到 +distance/2（以原始位置为中心）
-        step = distance / (n_frames - 1)  # 每帧移动的距离
-        offsets = np.linspace(-distance/2, distance/2, n_frames)
-    else:
-        # 单向平移：从0到distance（从原始位置向正方向移动）
-        step = distance / (n_frames - 1)
-        offsets = np.linspace(0, distance, n_frames)
+    # 角度转弧度
+    yaw_rad = np.deg2rad(yaw)
+    pitch_rad = np.deg2rad(pitch)
+    roll_rad = np.deg2rad(roll)
     
-    # 生成所有帧的位置（只修改目标轴，其他轴保持原始位置）
+    # 1) Yaw旋转矩阵（绕Y轴：左右转向）
+    R_yaw = np.array([
+        [np.cos(yaw_rad), 0, -np.sin(yaw_rad)],  # sin项取负
+        [0, 1, 0],
+        [np.sin(yaw_rad), 0, np.cos(yaw_rad)]   # sin项取负
+    ])
+    
+    # 2) Pitch旋转矩阵（绕X轴：上下俯仰）
+    R_pitch = np.array([
+        [1, 0, 0],
+        [0, np.cos(pitch_rad), -np.sin(pitch_rad)],
+        [0, np.sin(pitch_rad), np.cos(pitch_rad)]
+    ])
+    
+    # 3) Roll旋转矩阵（绕Z轴：左右倾斜）
+    R_roll = np.array([
+        [np.cos(roll_rad), -np.sin(roll_rad), 0],
+        [np.sin(roll_rad), np.cos(roll_rad), 0],
+        [0, 0, 1]
+    ])
+    
+    # 组合旋转矩阵：先Yaw→再Pitch→最后Roll（顺序影响最终姿态）
+    R_rot = R_roll @ R_pitch @ R_yaw  # 旋转复合矩阵
+    # 与原旋转矩阵结合（先原姿态，再叠加新旋转）
+    R_new = R_original @ R_rot  # 最终旋转矩阵
+    
+    # --------------------------
+    # 3. 生成平移轨迹位置（与之前一致）
+    # --------------------------
+    axis_idx = 0 
+    if axis == 'x': 
+      axis_idx = 0
+    elif axis == 'y':
+      axis_idx = 1
+    else: axis_idx = 2
+    offsets = np.linspace(0, distance, n_frames)  # 单向平移
     positions = []
     for offset in offsets:
         new_pos = original_pos.copy()
+        new_pos[0]*=x_scale
+        new_pos[1]*=y_scale
+        new_pos[2]*=z_scale
         new_pos[axis_idx] += offset  # 只修改x或y轴
         positions.append(new_pos)
-    positions = np.array(positions)  # 形状：[n_frames, 3]
+    positions = np.array(positions)  # [n_frames, 3]
     
     # --------------------------
-    # 3. 保持相机朝向不变（复用参考相机的旋转和上向量）
+    # 4. 提取调整后的相机朝向参数
     # --------------------------
-    # 提取参考相机的上向量（旋转矩阵的第2列，决定相机"向上"的方向）
-    up = -R[:, 1].copy()  # 3维向量
+    # 新的上向量（旋转矩阵第2列）
+    up = -R_new[:, 1].copy()
     up = up / np.linalg.norm(up)  # 归一化
-    
-    # 提取参考相机的观察方向（旋转矩阵的第2列的反方向，指向相机拍摄的前方）
-    look_dir = -R[:, 2].copy()  # 3维向量（从相机位置指向拍摄方向）
-    look_dir = look_dir / np.linalg.norm(look_dir)  # 归一化
+    # 新的观察方向（旋转矩阵第3列的反方向）
+    look_dir = -R_new[:, 2].copy()
+    look_dir = look_dir / np.linalg.norm(look_dir)
     
     # --------------------------
-    # 4. 构造每个位置的位姿矩阵（3x4）
+    # 5. 构造最终位姿矩阵
     # --------------------------
-    # 复用原函数中的viewmatrix逻辑（假设已定义，用于生成相机到世界的变换矩阵）
-    # viewmatrix(look_dir, up, pos) → 3x4矩阵（旋转+位置）
     trajectory_poses = np.stack([
-        viewmatrix(look_dir, up, pos)  # 每个位置的位姿：旋转不变，位置变化
+        viewmatrix(look_dir, up, pos)  # 每个位置的位姿：新旋转+新位置
         for pos in positions
     ])
     
     return trajectory_poses
 
+def generate_path_custom(viewpoint_cameras, traj_dir=None, n_frames=480, scale_percentile=90, shift=[0, 0], filter=False,distance=1.0,pitch_custom=0,roll=0,yaw=0,x_scale=1,y_scale=1,z_scale=1,axis='x'):
+  """生成相机轨迹路径"""
+  # 从所有输入相机中提取相机到世界的变换矩阵（c2w）
+  c2ws = np.array([np.linalg.inv(np.asarray((cam.world_to_camera.T).cpu().numpy())) for cam in viewpoint_cameras])
+  # 应用坐标系转换：将COLMAP坐标系转换为标准坐标系（翻转y和z轴）
+  pose = c2ws[:,:3,:] @ np.diag([1, -1, -1, 1])
+  # 使用PCA变换位姿，使主成分对齐到XYZ轴，并获取变换矩阵
+  pose_recenter, colmap_to_world_transform = transform_poses_pca(pose)
+  #使用第一张图片的位姿作为参考位姿
+  first_cam_pose = np.linalg.inv(np.asarray((viewpoint_cameras[0].world_to_camera.T).cpu().numpy()))  # 3x4矩阵（包含位置）
+
+  # 左乘 diag([1,-1,-1,1]) 表示“将COLMAP坐标系的位姿映射到标准坐标系”
+  first_cam_pose = np.diag([1, -1, 1, 1]) @ first_cam_pose  # 左乘！左乘！左乘！
+
+  new_poses = generate_translation_path(
+      reference_pose=first_cam_pose,  # 传入完整的3x4位姿
+      n_frames=n_frames,
+      distance=distance,
+      axis=axis,
+      pitch=pitch_custom,
+      roll=roll,
+      yaw=yaw,
+      x_scale=x_scale,
+      y_scale=y_scale,
+      z_scale=z_scale
+  )
+
+  new_poses = pad_poses(new_poses)
+
+  traj = []  # 初始化轨迹列表
+  # 遍历生成的每个新位姿，创建相机对象
+  for idx, c2w in enumerate(tqdm(new_poses, desc="Generating trajectory")):
+      # 再次应用坐标系转换，转回COLMAP坐标系
+      c2w = c2w @ np.diag([1, -1, -1, 1])
+      # 深拷贝第一个参考相机，并移动到CUDA设备
+      cam = copy.deepcopy(viewpoint_cameras[0]).to_device("cuda")
+      # 确保高度和宽度是偶数（某些渲染器要求）
+      cam.height = int(cam.height / 2) * 2
+      cam.width = int(cam.width / 2) * 2
+      # 设置新的世界到相机的变换矩阵（c2w的逆矩阵的转置）
+      cam.world_to_camera = torch.from_numpy(np.linalg.inv(c2w).T).float().cuda()
+      # 计算完整的投影矩阵：世界到相机变换 × 内参投影矩阵
+      cam.full_projection = (cam.world_to_camera.unsqueeze(0).bmm(cam.projection.unsqueeze(0))).squeeze(0)
+      # 计算相机中心位置（世界到相机矩阵的逆矩阵的第4列前3个元素）
+      cam.camera_center = cam.world_to_camera.inverse()[3, :3]
+      traj.append(cam)  # 将相机添加到轨迹列表
+      # 如果指定了轨迹目录，保存相机参数为pickle文件
+      if traj_dir is not None:
+          # 保存为pickle文件，文件名格式如 00000.pkl
+          with open(os.path.join(traj_dir, f"{str(idx).zfill(5)}.pkl"), "wb") as f:
+              pickle.dump({
+                  "world_view_transform": cam.world_to_camera.cpu().numpy(),  # 世界到视图变换矩阵
+                  "image_height": cam.height,  # 图像高度
+                  "image_width": cam.width,  # 图像宽度
+                  "FoVx": cam.fov_x.item(),  # 水平视场角
+              }, f)
+
+  # 如果需要过滤，返回轨迹、变换矩阵和重新居中的位姿；否则只返回轨迹
+  if filter:
+    return traj, colmap_to_world_transform, pose_recenter
+  else:
+    return traj
+
+def generate_single_pose(reference_pose: np.ndarray,
+                         x_offset: float = 0.0,
+                         y_offset: float = 0.0,
+                         z_offset: float = 0.0,
+                         yaw: float = 0.0,
+                         pitch: float = 0.0,
+                         roll: float = 0.0) -> np.ndarray:
+    """
+    基于参考位姿，生成单个调整后的相机位姿（位置偏移+角度调整）
+    
+    参数：
+        reference_pose: 参考相机位姿（3x4矩阵）
+        x_offset/y_offset/z_offset: 位置偏移（相对于参考位姿）
+        yaw/pitch/roll: 角度调整（度）
+    返回：
+        单个调整后的位姿矩阵（3x4）
+    """
+    # 1. 提取参考位姿的旋转和位置
+    R_original = reference_pose[:3, :3].copy()  # 原旋转矩阵
+    original_pos = reference_pose[:3, 3].copy()  # 原位置
+
+    # 2. 计算角度调整的旋转矩阵（复用之前的旋转逻辑）
+    yaw_rad = np.deg2rad(yaw)
+    pitch_rad = np.deg2rad(pitch)
+    roll_rad = np.deg2rad(roll)
+
+    # Yaw旋转矩阵（绕Y轴，正值向右）
+    R_yaw = np.array([
+        [np.cos(yaw_rad), 0, -np.sin(yaw_rad)],
+        [0, 1, 0],
+        [np.sin(yaw_rad), 0, np.cos(yaw_rad)]
+    ])
+    # Pitch旋转矩阵（绕X轴，正值抬头）
+    R_pitch = np.array([
+        [1, 0, 0],
+        [0, np.cos(pitch_rad), -np.sin(pitch_rad)],
+        [0, np.sin(pitch_rad), np.cos(pitch_rad)]
+    ])
+    # Roll旋转矩阵（绕Z轴，正值右旋）
+    R_roll = np.array([
+        [np.cos(roll_rad), -np.sin(roll_rad), 0],
+        [np.sin(roll_rad), np.cos(roll_rad), 0],
+        [0, 0, 1]
+    ])
+
+    # 组合旋转矩阵
+    R_rot = R_roll @ R_pitch @ R_yaw
+    R_new = R_original @ R_rot  # 最终旋转矩阵
+
+    # 3. 计算新位置（原位置 + 偏移量）
+    new_pos = original_pos.copy()
+    new_pos[0] += x_offset  # x轴偏移
+    new_pos[1] += y_offset  # y轴偏移
+    new_pos[2] += z_offset  # z轴偏移
+
+    # 4. 构造单一位姿矩阵（3x4）
+    up = -R_new[:, 1].copy()
+    up = up / np.linalg.norm(up)
+    look_dir = -R_new[:, 2].copy()
+    look_dir = look_dir / np.linalg.norm(look_dir)
+
+    return viewmatrix(look_dir, up, new_pos)  # 单个3x4位姿矩阵
 
 def generate_path(viewpoint_cameras, traj_dir=None, n_frames=480, scale_percentile=90, shift=[0, 0], pitch=None, filter=False):
   """生成相机轨迹路径"""
@@ -272,25 +429,10 @@ def generate_path(viewpoint_cameras, traj_dir=None, n_frames=480, scale_percenti
   # 使用PCA变换位姿，使主成分对齐到XYZ轴，并获取变换矩阵
   pose_recenter, colmap_to_world_transform = transform_poses_pca(pose)
 
-  # 在变换后的坐标系中生成新的椭圆路径位姿
-  # new_poses = generate_ellipse_path(poses=pose_recenter, pitch=pitch, shift=shift,
-  #                                   n_frames=n_frames, scale_percentile=scale_percentile)
-  first_cam_pose = np.linalg.inv(np.asarray((viewpoint_cameras[0].world_to_camera.T).cpu().numpy()))  # 3x4矩阵（包含位置）
-
-  # 左乘 diag([1,-1,-1,1]) 表示“将COLMAP坐标系的位姿映射到标准坐标系”
-  first_cam_pose = np.diag([1, -1, 1, 1]) @ first_cam_pose  # 左乘！左乘！左乘！
-
-  new_poses = generate_translation_path(
-      reference_pose=first_cam_pose,  # 传入完整的3x4位姿
-      n_frames=n_frames,
-      axis='x',
-      distance=1.0,
-      bidirectional=True
-  )
+  new_poses = generate_ellipse_path(poses=pose_recenter, pitch=pitch, shift=shift,
+                                    n_frames=n_frames, scale_percentile=scale_percentile)
   # 将新位姿变换回原始坐标系（逆变换） PCA处理
-  #new_poses = np.linalg.inv(colmap_to_world_transform) @ pad_poses(new_poses)
-
-  new_poses = pad_poses(new_poses)
+  new_poses = np.linalg.inv(colmap_to_world_transform) @ pad_poses(new_poses)
 
   traj = []  # 初始化轨迹列表
   # 遍历生成的每个新位姿，创建相机对象

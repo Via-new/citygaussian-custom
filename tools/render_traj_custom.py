@@ -4,6 +4,7 @@ import yaml
 import torch
 import torch_scatter
 import imageio
+import copy
 import numpy as np
 import re
 from tqdm import tqdm
@@ -11,8 +12,45 @@ from argparse import ArgumentParser, Namespace
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 from internal.utils.general_utils import parse
-from internal.utils.render_utils import generate_path, record_path, generate_static_path,generate_path_custom
+from internal.utils.render_utils import generate_path, record_path, generate_static_path,generate_path_custom,generate_single_pose,pad_poses
 from internal.utils.gaussian_model_loader import GaussianModelLoader
+
+import threading  # 新增：导入线程模块
+import socket
+import cv2
+
+# --------------------------
+# 新增：图片发送线程函数
+# --------------------------
+def send_image_thread(image, port=12345):
+    """主进程会等待该线程发送完成后再退出，直接接收内存中的图像数组"""
+    def send_image():
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('0.0.0.0', port))
+                s.listen(1)
+                print(f"\n发送线程启动：等待本地连接（端口 {port}）...")
+                conn, addr = s.accept()
+                with conn:
+                    print(f"已连接本地笔记本：{addr}")
+                    
+                    # 注意：OpenCV 默认处理 BGR 格式，而渲染的图像是 RGB，需要转换
+                    img_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+                    
+                    # 编码为JPG（直接处理内存中的图像）
+                    _, img_encoded = cv2.imencode('.jpg', img_bgr)
+                    img_bytes = img_encoded.tobytes()
+                    
+                    # 先发送图片大小，再发送数据
+                    conn.sendall(len(img_bytes).to_bytes(4, byteorder='big'))
+                    conn.sendall(img_bytes)
+                    print(f"图像已成功发送到本地（未保存到服务器）")
+        except Exception as e:
+            print(f"发送线程错误：{str(e)}")
+
+    thread = threading.Thread(target=send_image)  # 非守护线程
+    thread.start()
+    thread.join()  # 主进程等待发送完成
 
 # 体素过滤函数（去除漂浮噪点）  通过将场景在 xy 平面划分为体素，统计每个体素内 z 坐标（高度）的分布，过滤掉高度异常的点（可能是重建错误的漂浮噪点）。
 def voxel_filtering_no_gt(voxel_size, xy_range, target_xyz, std_ratio=2.0):
@@ -99,6 +137,15 @@ if __name__ == "__main__":
     parser.add_argument("--pitch_custom", type=float, help="control the camera pitch", default=0)
     parser.add_argument("--yaw_custom", type=float, help="control the z camera yaw", default=0)
     parser.add_argument("--roll_custom", type=float, help="control the z camera roll", default=0)
+
+    # 在原ArgumentParser中添加以下参数
+    parser.add_argument("--single_image", action="store_true", help="是否只渲染单张图片（而非视频）")
+    parser.add_argument("--x_offset", type=float, default=0.0, help="单张图片的x轴位置偏移（相对于第一张相机）")
+    parser.add_argument("--y_offset", type=float, default=0.0, help="单张图片的y轴位置偏移")
+    parser.add_argument("--z_offset", type=float, default=0.0, help="单张图片的z轴位置偏移")
+    parser.add_argument("--pitch_single", type=float, default=0.0, help="单张图片的pitch角度（度）")
+    parser.add_argument("--yaw_single", type=float, default=0.0, help="单张图片的yaw角度（度）")
+    parser.add_argument("--roll_single", type=float, default=0.0, help="单张图片的roll角度（度）")
     args = parser.parse_args(sys.argv[1:])
 
     # 加载模型与数据
@@ -144,108 +191,66 @@ if __name__ == "__main__":
     traj_dir = os.path.join(ckpt["datamodule_hyper_parameters"]["path"], 'traj')  # 创建轨迹保存目录
     os.makedirs(traj_dir, exist_ok=True)
 
-    # 根据参数选择生成自定义轨迹还是椭圆轨迹
-    if args.custom:
-        # 生成自定义轨迹：使用第一张相机的位姿进行任意视角渲染  默认过滤噪点
-        if not args.filter:
-            cam_traj, colmap_to_world_transform, pose_recenter = generate_path_custom(cameras, traj_dir, n_frames=args.n_frames, 
-            shift=[args.x_shift, args.y_shift], 
-            filter=False, 
-            scale_percentile=args.scale_percentile, 
-            distance=args.distance,
-            pitch_custom=args.pitch_custom,
-            roll=args.roll_custom,
-            yaw=args.yaw_custom,
-            axis=args.axis,
-            x_scale=args.x_scale,
-            y_scale=args.y_scale,
-            z_scale=args.z_scalfe)
-        else:
-            # 生成自定义轨迹：使用第一张相机的位姿进行任意视角渲染  默认过滤噪点
-            cam_traj, colmap_to_world_transform, pose_recenter = generate_path_custom(cameras, traj_dir, n_frames=args.n_frames, 
-            shift=[args.x_shift, args.y_shift], 
-            filter=True, 
-            scale_percentile=args.scale_percentile, 
-            distance=args.distance,
-            pitch_custom=args.pitch_custom,
-            roll=args.roll_custom,
-            yaw=args.yaw_custom,
-            axis=args.axis,
-            x_scale=args.x_scale,
-            y_scale=args.y_scale,
-            z_scale=args.z_scale)
+    # 新增：单张图片渲染逻辑
+    if args.single_image:
+        # 1. 提取第一张相机的参考位姿
+        first_cam_pose = np.linalg.inv(np.asarray((cameras[0].world_to_camera.T).cpu().numpy()))
+        # 坐标系转换（与generate_path_custom保持一致）
+        first_cam_pose = np.diag([1, -1, 1, 1]) @ first_cam_pose
 
-            # 将高斯点坐标转换到轨迹对应的坐标系（便于体素过滤）
+        # 2. 生成调整后的单一位姿
+        single_pose = generate_single_pose(
+            reference_pose=first_cam_pose,
+            x_offset=args.x_offset,
+            y_offset=args.y_offset,
+            z_offset=args.z_offset,
+            yaw=args.yaw_single,
+            pitch=args.pitch_single,
+            roll=args.roll_single
+        )
+        # 补齐为4x4矩阵（适配后续转换）
+        single_pose = pad_poses(np.array([single_pose]))[0]  # 形状(4,4)
+
+        # 3. 构造相机对象
+        cam = copy.deepcopy(cameras[0]).to_device("cuda")
+        cam.height = int(cam.height / 2) * 2
+        cam.width = int(cam.width / 2) * 2
+        # 转换位姿为世界到相机矩阵
+        c2w = single_pose @ np.diag([1, -1, -1, 1])  # 转回COLMAP坐标系
+        cam.world_to_camera = torch.from_numpy(np.linalg.inv(c2w).T).float().cuda()
+        cam.full_projection = (cam.world_to_camera.unsqueeze(0).bmm(cam.projection.unsqueeze(0))).squeeze(0)
+        cam.camera_center = cam.world_to_camera.inverse()[3, :3]
+
+        # 4. 应用噪点过滤（如果启用）
+        if args.filter:
+            # （复用之前的过滤逻辑，与轨迹模式一致）
             xyz_homo = torch.cat((model.get_xyz, torch.zeros(model.get_xyz.shape[0], 1, device="cuda")), dim=-1)
             transformed_xyz = xyz_homo @ torch.tensor(colmap_to_world_transform, device="cuda", dtype=xyz_homo.dtype).T
-
-            # 计算xy范围，确定体素大小
             x_min, x_max = transformed_xyz[:, 0].min(), transformed_xyz[:, 0].max()
             y_min, y_max = transformed_xyz[:, 1].min(), transformed_xyz[:, 1].max()
             voxel_size = torch.tensor([(x_max - x_min) / args.vox_grid, (y_max - y_min) / args.vox_grid], device="cuda")
             xy_range = torch.tensor([x_min, y_min, x_max, y_max], device="cuda")
-
-            # 执行体素过滤，得到需要去除的点的掩码
             vox_mask = voxel_filtering_no_gt(voxel_size, xy_range, transformed_xyz, args.std_ratio).bool().cpu().numpy()
             model.opacities[vox_mask] = 0.0
 
-            # 保存过滤后的模型（可选）
-            if args.save_filtered_gs:
-                ckpt['state_dict']['gaussian_model.gaussians.opacities'][vox_mask] = -13.8  #1e-6
-                torch.save(ckpt, loadable_file.replace('.ckpt', '_filtered.ckpt'))
-    else:
-        # 生成椭圆轨迹（原有逻辑）
-        if not args.filter:
-            # 不过滤噪点：直接生成相机轨迹（基于输入相机的分布，生成平滑的椭圆或路径）
-            cam_traj = generate_path(cameras, traj_dir, n_frames=args.n_frames, pitch=args.pitch, shift=[args.x_shift, args.y_shift], scale_percentile=args.scale_percentile)
-        else:
-            # 过滤噪点：生成轨迹时同时获取坐标变换矩阵，用于对齐高斯点和轨迹
-            cam_traj, colmap_to_world_transform, pose_recenter = generate_path(cameras, traj_dir, n_frames=args.n_frames, pitch=args.pitch, 
-            shift=[args.x_shift, args.y_shift], 
-            filter=True, 
-            scale_percentile=args.scale_percentile)
-            # 将高斯点坐标转换到轨迹对应的坐标系（便于体素过滤）
-            xyz_homo = torch.cat((model.get_xyz, torch.zeros(model.get_xyz.shape[0], 1, device="cuda")), dim=-1)
-            transformed_xyz = xyz_homo @ torch.tensor(colmap_to_world_transform, device="cuda", dtype=xyz_homo.dtype).T
+        # 5. 渲染并保存单张图片
+        # os.makedirs('./render_images', exist_ok=True)
+        # img_path = os.path.join('./render_images', f"{args.output_path.split('/')[-1]}_single.png")
+        # img = renderer(cam, model, bkgd_color)['render']
+        # img = (img * 255).clamp(0, 255).to(torch.uint8).permute(1, 2, 0).cpu().numpy()
+        # imageio.imwrite(img_path, img)
+        # print(f"Single image saved to {img_path}")
 
-            # 计算xy范围，确定体素大小
-            x_min, x_max = transformed_xyz[:, 0].min(), transformed_xyz[:, 0].max()
-            y_min, y_max = transformed_xyz[:, 1].min(), transformed_xyz[:, 1].max()
-            voxel_size = torch.tensor([(x_max - x_min) / args.vox_grid, (y_max - y_min) / args.vox_grid], device="cuda")
-            xy_range = torch.tensor([x_min, y_min, x_max, y_max], device="cuda")
-
-            # 执行体素过滤，得到需要去除的点的掩码
-            vox_mask = voxel_filtering_no_gt(voxel_size, xy_range, transformed_xyz, args.std_ratio).bool().cpu().numpy()
-            model.opacities[vox_mask] = 0.0
-
-            # 保存过滤后的模型（可选）
-            if args.save_filtered_gs:
-                ckpt['state_dict']['gaussian_model.gaussians.opacities'][vox_mask] = -13.8  #1e-6
-                torch.save(ckpt, loadable_file.replace('.ckpt', '_filtered.ckpt'))
-   
-    # 渲染视频并保存
-    print(f"Camera trajectory saved to {traj_dir}. Start rendering...")
-
-    # 创建视频保存目录
-    os.makedirs('./videos', exist_ok=True)
-    # 生成基础视频路径
-    base_video_path = os.path.join('./videos', f"{args.output_path.split('/')[-1]}_video.mp4")
-    # 获取下一个可用的视频路径（带序号，避免覆盖已有文件）
-    video_path = get_next_video_path(base_video_path)
-    print(f"Video will be saved to: {video_path}")
-    ##1109  # 初始化视频写入器（30帧/秒）
-    video = imageio.get_writer(video_path,format='ffmpeg', fps=60) 
-    #video = imageio.get_writer(video_path, fps=30)
-
-
-    # 遍历轨迹中的每个相机，渲染图像并添加到视频
-    for t in tqdm(range(len(cam_traj))):
-        cam = cam_traj[t]  # 获取第t帧的相机参数
-        cam.height = torch.tensor(cam.height, device=cam.R.device)
-        cam.width = torch.tensor(cam.width, device=cam.R.device)
-        img = renderer(cam, model, bkgd_color)['render']  # 调用渲染器生成图像
-        # 转换图像格式（0-255 uint8）并添加到视频
+        # 5. 渲染图像（仅在内存中，不保存到服务器）
+        img = renderer(cam, model, bkgd_color)['render']
+        # 转换为 numpy 数组（RGB格式，0-255 uint8）
         img = (img * 255).clamp(0, 255).to(torch.uint8).permute(1, 2, 0).cpu().numpy()
-        video.append_data(img)
-    video.close()  # 关闭视频写入器
-    print(f"Video saved to {video_path}.")
+        print(f"图像渲染完成，准备发送到本地...")
+
+        # 直接发送内存中的图像数组（不保存到服务器硬盘）
+        send_image_thread(
+            image=img,  # 传入内存中的图像数组
+            port=12345
+        )
+
+        # 无需等待额外时间（send_image_thread 已通过 join 确保发送完成）

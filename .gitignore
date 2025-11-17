@@ -9,6 +9,7 @@ videos
 edited
 blender
 temp
+render_images
 # 额外排除日志和临时文件（可选，根据你的实际情况补充）
 jupyter.log
 train.log
