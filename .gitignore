@@ -10,6 +10,7 @@ edited
 blender
 temp
 render_images
+utils/Depth-Anything-V2
 # 额外排除日志和临时文件（可选，根据你的实际情况补充）
 jupyter.log
 train.log

@@ -51,6 +51,7 @@ def get_scales(key, cameras, images, points3d_ordered, points3d_error_ordered, a
     valid_xys = image_meta.xys[mask]
 
     # reduce outliers
+    pts_idx = pts_idx.astype(int)
     pts_errors = points3d_error_ordered[pts_idx]
     valid_errors = pts_errors < args.point_max_error
     pts_idx = pts_idx[valid_errors]
@@ -108,7 +109,8 @@ def get_scales(key, cameras, images, points3d_ordered, points3d_error_ordered, a
 
 
 # depth_param_list = [get_scales(key, cameras, images, points3d_ordered, points3d_error_ordered, args) for key in images]
-depth_param_list = Parallel(n_jobs=-1, backend="threading")(
+# 修改后（限制线程数）
+depth_param_list = Parallel(n_jobs=4, backend="threading")(  # n_jobs设为4（或8，根据CPU核心数调整）
     delayed(get_scales)(key, cameras, images, points3d_ordered, points3d_error_ordered, args) for key in images
 )
 
