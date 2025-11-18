@@ -127,30 +127,50 @@ if __name__ == "__main__":
         config = parse(yaml.load(f, Loader=yaml.FullLoader))
     num_blocks = config.data.parser.init_args.block_dim[0] * config.data.parser.init_args.block_dim[1]
 
+    # ########## 添加：定义需要训练的块 ##########
+    trainable_blocks = [8, 9, 10]  # 仅训练这些块
+    print(f"本次训练的目标块：{trainable_blocks}，共{len(trainable_blocks)}个块")  # 新增打印：显示训练目标
+
     if len(srun_args) == 0:
-        with ProcessPoolExecutor(max_workers=num_blocks) as executor:
-            for block_id in range(num_blocks):
+        with ProcessPoolExecutor(max_workers=len(trainable_blocks)) as executor:
+            for block_id in trainable_blocks:
+                print(f"\n开始处理块 {block_id} 的GPU分配...")  # 新增打印：块处理开始
                 gpu_available = False
                 fail_cnt = 0
                 while not gpu_available:
+                    # 获取当前空闲GPU列表（py3nvml返回1表示可用，0表示占用）
                     free_gpus = py3nvml.get_free_gpus()
+                    # 新增打印：显示检测到的GPU状态
+                    print(f"当前检测到的GPU空闲状态（1=可用, 0=占用）：{free_gpus}，总可用数：{sum(free_gpus)}")
+
                     if sum(free_gpus) > 0:
                         gpu_available = True
+                        # 新增打印：找到可用GPU，准备分配
+                        selected_gpu = np.argmax(free_gpus)
+                        print(f"找到可用GPU！选中GPU {selected_gpu} 用于块 {block_id} 的训练")
                     elif fail_cnt > 90:
+                        # 超过90次等待（3小时）则退出
                         print("No free GPUs available in 3 hour, exiting.")
                         exit()
                     else:
+                        # 未找到可用GPU，继续等待
                         fail_cnt += 1
-                        print("No free GPUs available, wait for 2 minutes.")
+                        waited_time = fail_cnt * 2  # 已等待时间（分钟）
+                        remaining_time = (90 - fail_cnt) * 2  # 剩余等待时间（分钟）
+                        # 新增打印：详细等待信息
+                        print(f"未检测到可用GPU！当前等待次数：{fail_cnt}/90，已等待{waited_time}分钟，剩余{remaining_time}分钟")
+                        print("等待2分钟后重新检查...")
                         subprocess.run(["sleep", "120"])
 
+                # 提交训练任务
                 executor.submit(train_a_partition, args, training_args, srun_args, block_id, np.argmax(free_gpus))
-
+                print(f"块 {block_id} 已提交训练任务，等待60秒后处理下一个块...")  # 新增打印：任务提交提示
                 subprocess.run(["sleep", "60"])
     else:
         print("SLURM mode enabled")
-        trainable_partition_idx_list = list(range(num_blocks))
+        trainable_partition_idx_list = trainable_blocks
         total_trainable_partitions = len(trainable_partition_idx_list)
+        print(f"SLURM模式：训练块列表 {trainable_partition_idx_list}，共{total_trainable_partitions}个块")  # 新增打印
 
         with ThreadPoolExecutor(max_workers=total_trainable_partitions) as tpe:
             futures = [tpe.submit(
@@ -165,7 +185,7 @@ if __name__ == "__main__":
                     concurrent.futures.as_completed(futures),
                     total=total_trainable_partitions,
                     miniters=1,
-                    mininterval=0,  # keep progress bar updating
+                    mininterval=0,
                     maxinterval=0,
             ) as t:
                 for future in t:

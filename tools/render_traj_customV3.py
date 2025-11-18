@@ -11,7 +11,7 @@ import numpy as np
 import re
 import time
 import signal
-from queue import Queue  # 新增：线程安全队列
+from queue import Queue,Empty  # 新增：线程安全队列
 from tqdm import tqdm
 from argparse import ArgumentParser, Namespace
 
@@ -183,7 +183,7 @@ def send_thread(port=12345):
                             conn.sendall(len(img_bytes).to_bytes(4, byteorder='big'))
                             conn.sendall(img_bytes)
                             IMAGE_QUEUE.task_done()
-                        except queue.Empty:
+                        except Empty:
                             continue
                         except Exception as e:
                             print(f"长连接发送错误：{str(e)}，尝试重连...")
